@@ -141,33 +141,9 @@ wire [DWIDTH_SD:0] G_sd;
 wire [DWIDTH_SD:0] B_sd;
 wire hs_sd, vs_sd, hb_sd, vb_sd, ce_pix_sd;
 
-scandoubler #(.LENGTH(LINE_LENGTH), .HALF_DEPTH(HALF_DEPTH_SD)) sd
-(
-	.clk_vid(CLK_VIDEO),
-	.hq2x(hq2x),
-
-	.ce_pix(ce_pix),
-	.hs_in(hs_g),
-	.vs_in(vs_g),
-	.hb_in(hb_g),
-	.vb_in(vb_g),
-	.r_in(R_gamma),
-	.g_in(G_gamma),
-	.b_in(B_gamma),
-
-	.ce_pix_out(ce_pix_sd),
-	.hs_out(hs_sd),
-	.vs_out(vs_sd),
-	.hb_out(hb_sd),
-	.vb_out(vb_sd),
-	.r_out(R_sd),
-	.g_out(G_sd),
-	.b_out(B_sd)
-);
-
-wire [DWIDTH_SD:0] rt = (scandoubler ? R_sd : R_gamma);
-wire [DWIDTH_SD:0] gt = (scandoubler ? G_sd : G_gamma);
-wire [DWIDTH_SD:0] bt = (scandoubler ? B_sd : B_gamma);
+wire [DWIDTH_SD:0] rt = R_gamma;
+wire [DWIDTH_SD:0] gt = G_gamma;
+wire [DWIDTH_SD:0] bt = B_gamma;
 
 always @(posedge CLK_VIDEO) begin
 	reg [7:0] r,g,b;
@@ -185,7 +161,7 @@ always @(posedge CLK_VIDEO) begin
 		ce_osc <= 0;
 	end
 
-	CE_PIXEL <= scandoubler ? ce_pix_sd : fs_osc ? (~old_ce & ce_pix) : ce_pix;
+	CE_PIXEL <= fs_osc ? (~old_ce & ce_pix) : ce_pix;
 
 	if(!GAMMA && HALF_DEPTH) begin
 		r <= {rt,rt};
@@ -198,10 +174,10 @@ always @(posedge CLK_VIDEO) begin
 		b <= bt;
 	end
 
-	hde <= scandoubler ? ~hb_sd : ~hb_g;
-	vde <= scandoubler ? ~vb_sd : ~vb_g;
-	vs  <= scandoubler ?  vs_sd :  vs_g;
-	hs  <= scandoubler ?  hs_sd :  hs_g;
+	hde <= ~hb_g;
+	vde <= ~vb_g;
+	vs  <= vs_g;
+	hs  <= hs_g;
 
 	if(CE_PIXEL) begin
 		VGA_R <= r;

@@ -125,8 +125,8 @@ ENTITY ascal IS
 		ADAPTIVE     : boolean := true;
 		DOWNSCALE_NN : boolean := false;
 		FRAC         : natural RANGE 4 TO 8 :=4;
-		OHRES        : natural RANGE 1 TO 4096 :=2048;
-		IHRES        : natural RANGE 1 TO 2048 :=2048;
+		OHRES        : natural RANGE 1 TO 4096 :=4096;
+		IHRES        : natural RANGE 1 TO 2048 :=1024;
 		N_DW         : natural RANGE 64 TO 128 := 128;
 		N_AW         : natural RANGE 8 TO 32 := 32;
 		N_BURST      : natural := 256 -- 256 bytes per burst
@@ -785,173 +785,6 @@ ARCHITECTURE rtl OF ascal IS
 	SIGNAL o_h_bil_t,o_v_bil_t : type_bil_t;
 	SIGNAL o_h_near_t,o_v_near_t : type_bil_t;
 	SIGNAL i_h_bil_t : type_bil_t;
-
-	-----------------------------------------------------------------------------
-	-- Sharp Bilinear
-	--  <0.5 : x*x*x*4
-	--  >0.5 : 1 - (1-x)*(1-x)*(1-x)*4
-
-	TYPE type_sbil_tt IS RECORD
-		f : unsigned(FRAC-1 DOWNTO 0);
-		s : unsigned(FRAC-1 DOWNTO 0);
-	END RECORD;
-
-	SIGNAL o_h_sbil_t,o_v_sbil_t : type_sbil_tt;
-
-	FUNCTION sbil_frac1(f : unsigned(11 DOWNTO 0)) RETURN type_sbil_tt IS
-		VARIABLE u : unsigned(FRAC-1 DOWNTO 0);
-		VARIABLE v : unsigned(2*FRAC-1 DOWNTO 0);
-		VARIABLE x : type_sbil_tt;
-	BEGIN
-		IF f(11)='0' THEN
-			u:=f(11 DOWNTO 12-FRAC);
-		ELSE
-			u:=NOT f(11 DOWNTO 12-FRAC);
-		END IF;
-		v:=u*u;
-		x.f:=u;
-		x.s:=v(2*FRAC-2 DOWNTO FRAC-1);
-		RETURN x;
-	END FUNCTION;
-
-	FUNCTION sbil_frac2(f : unsigned(11 DOWNTO 0);
-							  t : type_sbil_tt) RETURN unsigned IS
-		VARIABLE v : unsigned(2*FRAC-1 DOWNTO 0);
-	BEGIN
-		v:=t.f*t.s;
-		IF f(11)='0' THEN
-			RETURN v(2*FRAC-2 DOWNTO FRAC-1);
-		ELSE
-			RETURN NOT v(2*FRAC-2 DOWNTO FRAC-1);
-		END IF;
-	END FUNCTION;
-
-	-----------------------------------------------------------------------------
-	-- Bicubic
-	TYPE type_bic_abcd IS RECORD
-		a  : unsigned(7 DOWNTO 0);  --  0.8
-		b  : signed(8 DOWNTO 0);  --  0.9
-		c  : signed(11 DOWNTO 0); -- 3.9
-		d  : signed(10 DOWNTO 0); -- 2.9
-		xx : signed(8 DOWNTO 0); -- X.X 1.8
-	END RECORD;
-	TYPE type_bic_pix_abcd IS RECORD
-		r,g,b : type_bic_abcd;
-	END RECORD;
-	TYPE type_bic_tt1 IS RECORD -- Intermediate result
-		r_bx,g_bx,b_bx    : signed(8 DOWNTO 0);  -- B.X 1.8
-		r_cxx,g_cxx,b_cxx : signed(11 DOWNTO 0); -- C.XX 3.9
-		r_dxx,g_dxx,b_dxx : signed(10 DOWNTO 0); -- D.XX 2.9
-	END RECORD;
-	TYPE type_bic_tt2 IS RECORD -- Intermediate result
-		r_abxcxx,g_abxcxx,b_abxcxx : signed(9 DOWNTO 0); --  A + B.X + C.XX 2.8
-		r_dxxx,g_dxxx,b_dxxx : signed(9 DOWNTO 0); -- D.X.X.X 2.8
-	END RECORD;
-
-	----------------------------------------------------------
-	-- Y = A + B.X + C.X.X + D.X.X.X = A + X.(B + X.(C + X.D))
-	-- A = Y(0)                                       0 .. 1    unsigned
-	-- B = Y(1)/2 - Y(-1)/2                        -1/2 .. +1/2 signed
-	-- C = Y(-1) - 5*Y(0)/2 + 2*Y(1) - Y(2)/2        -3 .. +3   signed
-	-- D = -Y(-1)/2 + 3*Y(0)/2 - 3*Y(1)/2 + Y(2)/2   -2 .. +2   signed
-
-	FUNCTION bic_calc0(f : unsigned(11 DOWNTO 0);
-							 pm,p0,p1,p2 : unsigned(7 DOWNTO 0)) RETURN type_bic_abcd IS
-		VARIABLE xx : signed(2*FRAC+1 DOWNTO 0); -- 2.(2*FRAC)
-	BEGIN
-		xx := signed('0' & f(11 DOWNTO 12-FRAC)) *
-				signed('0' & f(11 DOWNTO 12-FRAC)); -- 2.(2*FRAC)
-		RETURN type_bic_abcd'(
-			a=>p0,-- 0.8
-			b=>signed(('0' & p1) - ('0' & pm)), -- 0.9
-			c=>signed(("000" & pm & '0') - ("00" & p0 & "00") - ("0000" & p0) +
-						 ("00" & p1 & "00") - ("0000" & p2)), -- 3.9
-			d=>signed(("00" & p0 & '0') - ("00" & p1 & '0') - ("000" & p1) +
-						 ("000" & p0) + ("000" & p2) - ("000" & pm)), -- 2.9
-			xx=>xx(2*FRAC DOWNTO 2*FRAC-8)); -- 1.8
-	END FUNCTION;
-	FUNCTION bic_calc0(f : unsigned(11 DOWNTO 0);
-							 p : arr_pix(0 TO 3)) RETURN type_bic_pix_abcd IS
-	BEGIN
-		RETURN type_bic_pix_abcd'( r=>bic_calc0(f,p(0).r,p(1).r,p(2).r,p(3).r),
-											g=>bic_calc0(f,p(0).g,p(1).g,p(2).g,p(3).g),
-											b=>bic_calc0(f,p(0).b,p(1).b,p(2).b,p(3).b));
-	END FUNCTION;
-
-	----------------------------------------------------------
-	-- Calc : B.X, C.XX, D.XX
-	FUNCTION bic_calc1(f    : unsigned(11 DOWNTO 0);
-							 abcd : type_bic_pix_abcd) RETURN type_bic_tt1 IS
-		VARIABLE t : type_bic_tt1;
-		VARIABLE bx : signed(9+FRAC DOWNTO 0); -- 1.(FRAC+9)
-		VARIABLE cxx : signed(20 DOWNTO 0); -- 4.17
-		VARIABLE dxx : signed(19 DOWNTO 0); -- 3.17
-	BEGIN
-		bx := abcd.r.b * signed('0' & f(11 DOWNTO 12-FRAC)); -- 1.(FRAC+9)
-		t.r_bx:=bx(9+FRAC DOWNTO 9+FRAC-8); -- 1.8
-		cxx:= abcd.r.c * abcd.r.xx; -- 3.9 * 1.8 = 4.17
-		t.r_cxx:=cxx(19 DOWNTO 8); -- 3.9
-		dxx:= abcd.r.d * abcd.r.xx; -- 2.9 * 1.8 = 3.17
-		t.r_dxx:=dxx(18 DOWNTO 8); -- 2.9
-		bx := abcd.g.b * signed('0' & f(11 DOWNTO 12-FRAC)); -- 1.(FRAC+9)
-		t.g_bx:=bx(9+FRAC DOWNTO 9+FRAC-8); -- 1.8
-		cxx:= abcd.g.c * abcd.g.xx; -- 3.9 * 1.8 = 4.17
-		t.g_cxx:=cxx(19 DOWNTO 8); -- 3.9
-		dxx:= abcd.g.d * abcd.g.xx; -- 2.9 * 1.8 = 3.17
-		t.g_dxx:=dxx(18 DOWNTO 8); -- 2.9
-		bx := abcd.b.b * signed('0' & f(11 DOWNTO 12-FRAC)); -- 1.(FRAC+9)
-		t.b_bx:=bx(9+FRAC DOWNTO 9+FRAC-8); -- 1.8
-		cxx:= abcd.b.c * abcd.b.xx; -- 3.9 * 1.8 = 4.17
-		t.b_cxx:=cxx(19 DOWNTO 8); -- 3.9
-		dxx:= abcd.b.d * abcd.b.xx; -- 2.9 * 1.8 = 3.17
-		t.b_dxx:=dxx(18 DOWNTO 8); -- 2.9
-		RETURN t;
-	END FUNCTION;
-
-	----------------------------------------------------------
-	-- Calc A + BX + CXX , X.DXX
-	FUNCTION bic_calc2(f    : unsigned(11 DOWNTO 0);
-							 t    : type_bic_tt1;
-							 abcd : type_bic_pix_abcd) RETURN type_bic_tt2 IS
-		VARIABLE u : type_bic_tt2;
-		VARIABLE x : signed(11+FRAC DOWNTO 0); -- 3.(9+FRAC)
-	BEGIN
-		u.r_abxcxx:=(t.r_bx(8) & t.r_bx) + ("00" & signed(abcd.r.a)) + t.r_cxx(10 DOWNTO 1); -- 2.8
-		u.g_abxcxx:=(t.g_bx(8) & t.g_bx) + ("00" & signed(abcd.g.a)) + t.g_cxx(10 DOWNTO 1); -- 2.8
-		u.b_abxcxx:=(t.b_bx(8) & t.b_bx) + ("00" & signed(abcd.b.a)) + t.b_cxx(10 DOWNTO 1); -- 2.8
-
-		x:=t.r_dxx *  signed('0' & f(11 DOWNTO 12-FRAC)); --2.9 * 1.FRAC =3.(9+FRAC)
-		u.r_dxxx:=x(10+FRAC DOWNTO 9+FRAC-8); -- 2.8
-		x:=t.g_dxx *  signed('0' & f(11 DOWNTO 12-FRAC)); --2.9 * 1.FRAC =3.(9+FRAC)
-		u.g_dxxx:=x(10+FRAC DOWNTO 9+FRAC-8); -- 2.8
-		x:=t.b_dxx *  signed('0' & f(11 DOWNTO 12-FRAC)); --2.9 * 1.FRAC =3.(9+FRAC)
-		u.b_dxxx:=x(10+FRAC DOWNTO 9+FRAC-8); -- 2.8
-		RETURN u;
-	END FUNCTION;
-
-	----------------------------------------------------------
-	-- Calc  (A + BX + CXX) + (DXXX)
-	FUNCTION bic_calc3(f    : unsigned(11 DOWNTO 0);
-							 t    : type_bic_tt2;
-							 abcd : type_bic_pix_abcd) RETURN type_pix IS
-		VARIABLE x : type_pix;
-		VARIABLE v : signed(9 DOWNTO 0); -- 2.8
-	BEGIN
-		v:=t.r_abxcxx + t.r_dxxx;
-		x.r:=bound(unsigned(v),8);
-		v:=t.g_abxcxx + t.g_dxxx;
-		x.g:=bound(unsigned(v),8);
-		v:=t.b_abxcxx + t.b_dxxx;
-		x.b:=bound(unsigned(v),8);
-		RETURN x;
-	END FUNCTION;
-
-	-----------------------------------------------------------------------------
-	SIGNAL o_h_bic_pix,o_v_bic_pix : type_pix;
-	SIGNAL o_h_bic_abcd1,o_h_bic_abcd2 : type_bic_pix_abcd;
-	SIGNAL o_v_bic_abcd1,o_v_bic_abcd2 : type_bic_pix_abcd;
-	SIGNAL o_h_bic_tt1,o_v_bic_tt1 : type_bic_tt1;
-	SIGNAL o_h_bic_tt2,o_v_bic_tt2 : type_bic_tt2;
 
 	-----------------------------------------------------------------------------
 	-- Polyphase
@@ -2538,44 +2371,6 @@ BEGIN
 			o_hpixq(2)<=(o_hpix3,o_hpix2,o_hpix1,o_hpix0);
 			o_hpixq(3 TO 8)<=o_hpixq(2 TO 7);
 
-			-- BILINEAR / SHARP BILINEAR ---------------
-			-- C7 : Pre-calc Sharp Bilinear
-			o_h_sbil_t<=sbil_frac1(o_hfrac(6));
-
-			-- C8 : Select
-			o_h_bil_frac<=(OTHERS =>'0');
-			IF o_hmode(0)='1' THEN -- Bilinear
-				IF MASK(MASK_BILINEAR)='1' THEN
-					o_h_bil_frac<=bil_frac(o_hfrac(7));
-				END IF;
-			ELSE -- Sharp Bilinear
-				IF MASK(MASK_SHARP_BILINEAR)='1' THEN
-					o_h_bil_frac<=sbil_frac2(o_hfrac(7),o_h_sbil_t);
-				END IF;
-			END IF;
-
-			-- C9 : Opposite frac
-			o_h_bil_t<=bil_calc(o_h_bil_frac,o_hpixq(8));
-
-			-- C10 : Bilinear / Sharp Bilinear
-			o_h_bil_pix.r<=bound(o_h_bil_t.r,8+FRAC);
-			o_h_bil_pix.g<=bound(o_h_bil_t.g,8+FRAC);
-			o_h_bil_pix.b<=bound(o_h_bil_t.b,8+FRAC);
-
-			-- BICUBIC -------------------------------------------
-			-- C8 : Bicubic coefficients A,B,C,D
-			-- C8 : Bicubic calc T1 = X.D + C
-			o_h_bic_abcd1<=bic_calc0(o_hfrac(7),o_hpixq(6));
-			o_h_bic_tt1<=bic_calc1(o_hfrac(7),
-										 bic_calc0(o_hfrac(7),o_hpixq(6)));
-
-			-- C9 : Bicubic calc T2 = X.T1 + B
-			o_h_bic_abcd2<=o_h_bic_abcd1;
-			o_h_bic_tt2<=bic_calc2(o_hfrac(8),o_h_bic_tt1,o_h_bic_abcd1);
-
-			-- C10 : Bicubic final Y = X.T2 + A
-			o_h_bic_pix<=bic_calc3(o_hfrac(9),o_h_bic_tt2,o_h_bic_abcd2);
-
 			-- POLYPHASE -----------------------------------------
 			-- C2
 			IF o_hfrac(2)(o_hfrac(2)'left)='0' THEN
@@ -2597,25 +2392,8 @@ BEGIN
 			o_wr<=o_altx AND (o_copyv(14) & o_copyv(14) & o_copyv(14) & o_copyv(14));
 			o_ldw<=(x"00",x"00",x"00");
 
-			CASE o_hmode(2 DOWNTO 0) IS
-				WHEN "000"  => -- Nearest
-					IF MASK(MASK_NEAREST)='1' THEN
-						o_ldw<=o_h_poly_pix;
-				 END IF;
-				WHEN "001" | "010" => -- Bilinear | Sharp Bilinear
-					IF MASK(MASK_BILINEAR)='1' OR
-						 MASK(MASK_SHARP_BILINEAR)='1' THEN
-						o_ldw<=o_h_bil_pix;
-				 END IF;
-				WHEN "011" => -- BiCubic
-					IF MASK(MASK_BICUBIC)='1' THEN
-						o_ldw<=o_h_bic_pix;
-					END IF;
-				WHEN OTHERS => -- PolyPhase
-					IF MASK(MASK_POLY)='1' THEN
-						o_ldw<=o_h_poly_pix;
-					END IF;
-			END CASE;
+			o_ldw<=o_h_poly_pix;
+
 			------------------------------------------------------
 		END IF;
 	END PROCESS HSCAL;
@@ -2799,43 +2577,6 @@ BEGIN
 				-- CYCLE 9
 				o_vpixq<=o_vpixq_pre;
 
-				-- BILINEAR / SHARP BILINEAR -----------------------
-				-- C8 : Pre-calc Sharp Bilinear
-				o_v_sbil_t<=sbil_frac1(o_vfrac);
-
-				-- C9 : Select
-				o_v_bil_frac<=(OTHERS =>'0');
-				IF o_vmode(0)='1' THEN -- Bilinear
-					IF MASK(MASK_BILINEAR)='1' THEN
-						o_v_bil_frac<=bil_frac(o_vfrac);
-					END IF;
-				ELSE  -- Sharp Bilinear
-					IF MASK(MASK_SHARP_BILINEAR)='1' THEN
-						o_v_bil_frac<=sbil_frac2(o_vfrac,o_v_sbil_t);
-					END IF;
-				END IF;
-
-				-- C10 :
-				o_v_bil_t<=bil_calc(o_v_bil_frac,o_vpixq);
-
-				-- C11 : Nearest / Bilinear / Sharp Bilinear
-				o_v_bil_pix.r<=bound(o_v_bil_t.r,8+FRAC);
-				o_v_bil_pix.g<=bound(o_v_bil_t.g,8+FRAC);
-				o_v_bil_pix.b<=bound(o_v_bil_t.b,8+FRAC);
-
-				-- BICUBIC -----------------------------------------
-				-- C9 : Bicubic coefficients A,B,C,D
-				-- C9 : Bicubic calc T1 = X.D + C
-				o_v_bic_abcd1<=bic_calc0(o_vfrac,o_vpixq);
-				o_v_bic_tt1<=bic_calc1(o_vfrac,bic_calc0(o_vfrac,o_vpixq));
-
-				-- C10 : Bicubic calc T2 = X.T1 + B
-				o_v_bic_abcd2<=o_v_bic_abcd1;
-				o_v_bic_tt2<=bic_calc2(o_vfrac,o_v_bic_tt1,o_v_bic_abcd1);
-
-				-- C11 : Bicubic final Y = X.T2 + A
-				o_v_bic_pix<=bic_calc3(o_vfrac,o_v_bic_tt2,o_v_bic_abcd2);
-
 				-- POLYPHASE ---------------------------------------
 				-- C3 : Setup luminance
 				o_v_lum_pix<=o_vpix_inner(0);
@@ -2858,34 +2599,9 @@ BEGIN
 				o_b<=x"00";
 				o_brd<= not o_pev(11);
 
-				CASE o_vmode(2 DOWNTO 0) IS
-					WHEN "000" => -- Nearest
-						IF MASK(MASK_NEAREST)='1' THEN
-							o_r<=o_v_poly_pix.r;
-							o_g<=o_v_poly_pix.g;
-							o_b<=o_v_poly_pix.b;
-						END IF;
-					WHEN "001" | "010" => -- Bilinear | Sharp Bilinear
-						IF MASK(MASK_BILINEAR)='1' OR
-							 MASK(MASK_SHARP_BILINEAR)='1' THEN
-							o_r<=o_v_bil_pix.r;
-							o_g<=o_v_bil_pix.g;
-							o_b<=o_v_bil_pix.b;
-						END IF;
-					WHEN "011" => -- BiCubic
-						IF MASK(MASK_BICUBIC)='1' THEN
-							o_r<=o_v_bic_pix.r;
-							o_g<=o_v_bic_pix.g;
-							o_b<=o_v_bic_pix.b;
-						END IF;
-
-					WHEN OTHERS => -- Polyphase
-						IF MASK(MASK_POLY)='1' THEN
-							o_r<=o_v_poly_pix.r;
-							o_g<=o_v_poly_pix.g;
-							o_b<=o_v_poly_pix.b;
-						END IF;
-				END CASE;
+				o_r<=o_v_poly_pix.r;
+				o_g<=o_v_poly_pix.g;
+				o_b<=o_v_poly_pix.b;
 
 				IF o_pev(11)='0' THEN
 					o_r<=o_border(23 DOWNTO 16); -- Copy border colour

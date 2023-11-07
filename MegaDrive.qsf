@@ -54,6 +54,9 @@ set_global_assignment -name VERILOG_MACRO "M68K_CHEAT=1"
 set_global_assignment -name VERILOG_MACRO "Z80_CHEAT=1"
 set_global_assignment -name VERILOG_MACRO "EXT_CLOCKS=1"
 
+set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_YC=1"
+set_global_assignment -name VERILOG_MACRO "MISTER_DOWNSCALE_NN=1"
+
 source sys/sys.tcl
 source sys/sys_analog.tcl
 source files.qip
